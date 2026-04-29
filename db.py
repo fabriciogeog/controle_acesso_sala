@@ -28,6 +28,13 @@ def init_db():
                 FOREIGN KEY (cpf) REFERENCES alunos (cpf)
             )
         ''')
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS tentativas (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp TEXT,
+                foto_path TEXT
+            )
+        ''')
 
 
 def atualizar_banco():
@@ -132,6 +139,94 @@ def ja_registrado_recentemente(cpf, horas_minimas):
             (cpf, intervalo)
         )
         return cursor.fetchone() is not None
+
+
+def listar_alunos():
+    """Retorna [(cpf, nome, curso, ultimo_acesso, n_embeddings)]."""
+    with sqlite3.connect(DATABASE) as conn:
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT a.cpf, a.nome, a.curso, a.ultimo_acesso, COUNT(e.id)
+            FROM alunos a
+            LEFT JOIN embeddings e ON a.cpf = e.cpf
+            GROUP BY a.cpf
+            ORDER BY a.nome
+        ''')
+        return cursor.fetchall()
+
+
+def remover_aluno(cpf):
+    """Remove aluno e todos os seus dados. Retorna True se encontrado."""
+    with sqlite3.connect(DATABASE) as conn:
+        cursor = conn.cursor()
+        cursor.execute('DELETE FROM embeddings WHERE cpf = ?', (cpf,))
+        cursor.execute('DELETE FROM registros WHERE cpf = ?', (cpf,))
+        cursor.execute('DELETE FROM alunos WHERE cpf = ?', (cpf,))
+        return cursor.rowcount > 0
+
+
+def listar_registros(cpf=None, data_inicio=None, data_fim=None):
+    """Retorna registros com filtros opcionais, mais recentes primeiro."""
+    query = 'SELECT cpf, nome, curso, timestamp, foto_path FROM registros WHERE 1=1'
+    params = []
+    if cpf:
+        query += ' AND cpf = ?'
+        params.append(cpf)
+    if data_inicio:
+        query += ' AND timestamp >= ?'
+        params.append(data_inicio)
+    if data_fim:
+        query += ' AND timestamp <= ?'
+        params.append(data_fim)
+    query += ' ORDER BY timestamp DESC'
+    with sqlite3.connect(DATABASE) as conn:
+        cursor = conn.cursor()
+        cursor.execute(query, params)
+        return cursor.fetchall()
+
+
+def relatorio_frequencia():
+    """Retorna [(cpf, nome, curso, total_acessos, primeiro_acesso, ultimo_acesso)]."""
+    with sqlite3.connect(DATABASE) as conn:
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT a.cpf, a.nome, a.curso,
+                   COUNT(r.id),
+                   MIN(r.timestamp),
+                   MAX(r.timestamp)
+            FROM alunos a
+            LEFT JOIN registros r ON a.cpf = r.cpf
+            GROUP BY a.cpf
+            ORDER BY COUNT(r.id) DESC, a.nome
+        ''')
+        return cursor.fetchall()
+
+
+def salvar_tentativa_desconhecida(foto_path, timestamp_str):
+    """Grava tentativa de acesso de rosto não reconhecido."""
+    with sqlite3.connect(DATABASE) as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            'INSERT INTO tentativas (timestamp, foto_path) VALUES (?, ?)',
+            (timestamp_str, foto_path)
+        )
+
+
+def listar_tentativas(data_inicio=None, data_fim=None):
+    """Retorna tentativas de acesso não reconhecidas, mais recentes primeiro."""
+    query = 'SELECT id, timestamp, foto_path FROM tentativas WHERE 1=1'
+    params = []
+    if data_inicio:
+        query += ' AND timestamp >= ?'
+        params.append(data_inicio)
+    if data_fim:
+        query += ' AND timestamp <= ?'
+        params.append(data_fim)
+    query += ' ORDER BY timestamp DESC'
+    with sqlite3.connect(DATABASE) as conn:
+        cursor = conn.cursor()
+        cursor.execute(query, params)
+        return cursor.fetchall()
 
 
 def salvar_registro(cpf, nome, curso, timestamp_str, foto_path):

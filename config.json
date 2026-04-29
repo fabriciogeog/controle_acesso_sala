@@ -1,0 +1,6 @@
+{
+  "threshold_similaridade": 0.7,
+  "n_embeddings_por_aluno": 5,
+  "tempo_entre_registros_segundos": 30,
+  "tempo_minimo_entre_registros_horas": 24
+}

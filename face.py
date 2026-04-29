@@ -8,23 +8,45 @@ from PIL import Image
 from facenet_pytorch import MTCNN, InceptionResnetV1
 
 import db
+import config
 
 # =============================================
 # CONFIGURAÇÕES
 # =============================================
 DEVICE = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
 FOTOS_DIR = 'fotos_registros'
-THRESHOLD_SIMILARIDADE = 0.7
-N_EMBEDDINGS_POR_ALUNO = 5
-TEMPO_ENTRE_REGISTROS_SEGUNDOS = 30
+FOTOS_DESCONHECIDOS_DIR = 'fotos_desconhecidos'
+COOLDOWN_DESCONHECIDO_SEGUNDOS = 60
 
 os.makedirs(FOTOS_DIR, exist_ok=True)
+os.makedirs(FOTOS_DESCONHECIDOS_DIR, exist_ok=True)
 
 # =============================================
 # MODELOS
 # =============================================
 mtcnn = MTCNN(keep_all=False, device=DEVICE, selection_method='largest')
 resnet = InceptionResnetV1(pretrained='vggface2').eval().to(DEVICE)
+
+# Detector de olhos (anti-spoofing via blink detection)
+# Haar cascade já embutido no OpenCV — zero dependências extras
+_eye_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_eye.xml')
+
+_FRAMES_OLHO_FECHADO = 2   # frames consecutivos sem olhos para confirmar fechamento
+_JANELA_PISCAR_SEG   = 6   # segundos para o usuário piscar
+
+
+# =============================================
+# ANTI-SPOOFING (blink detection)
+# =============================================
+def _olhos_detectados(frame_bgr, box_clean):
+    """Retorna True se olhos detectados no ROI do rosto, False se não, None se ROI inválido."""
+    x_min, y_min, x_max, y_max = box_clean
+    roi = frame_bgr[y_min:y_max, x_min:x_max]
+    if roi.size == 0:
+        return None
+    gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+    eyes = _eye_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(15, 15))
+    return len(eyes) > 0
 
 
 # =============================================
@@ -75,8 +97,9 @@ def cadastrar_aluno():
         if input("\n🔁 Atualizar dados? (s/n): ").strip().lower() != 's':
             return
 
+    n_capturas = config.get('n_embeddings_por_aluno')
     print(f"\n📸 Posicione o rosto de '{nome}' frente à câmera.")
-    print(f"   Serão feitas {N_EMBEDDINGS_POR_ALUNO} capturas. Varie levemente o ângulo entre elas.")
+    print(f"   Serão feitas {n_capturas} capturas. Varie levemente o ângulo entre elas.")
 
     cap = cv2.VideoCapture(0)
     if not cap.isOpened():
@@ -90,7 +113,7 @@ def cadastrar_aluno():
 
     embeddings_coletados = []
 
-    while len(embeddings_coletados) < N_EMBEDDINGS_POR_ALUNO:
+    while len(embeddings_coletados) < n_capturas:
         key = cv2.waitKey(1) & 0xFF
         if key == ord('q'):
             print("❌ Cadastro cancelado.")
@@ -106,7 +129,7 @@ def cadastrar_aluno():
         img_pil = Image.fromarray(rgb_frame)
         boxes, probs = mtcnn.detect(img_pil)
 
-        progresso = f"Captura {len(embeddings_coletados)}/{N_EMBEDDINGS_POR_ALUNO}"
+        progresso = f"Captura {len(embeddings_coletados)}/{n_capturas}"
         cv2.putText(frame, progresso, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 0), 2)
 
         if boxes is not None and len(boxes) > 0 and probs[0] > 0.9:
@@ -135,10 +158,10 @@ def cadastrar_aluno():
                 continue
 
             embeddings_coletados.append(embedding)
-            print(f"   📷 Captura {len(embeddings_coletados)}/{N_EMBEDDINGS_POR_ALUNO} registrada.")
+            print(f"   📷 Captura {len(embeddings_coletados)}/{n_capturas} registrada.")
 
             cv2.rectangle(frame, (x_min, y_min), (x_max, y_max), (0, 255, 0), 2)
-            cv2.putText(frame, f'✅ {len(embeddings_coletados)}/{N_EMBEDDINGS_POR_ALUNO}',
+            cv2.putText(frame, f'✅ {len(embeddings_coletados)}/{n_capturas}',
                         (x_min, y_min - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
             cv2.imshow('Cadastro', frame)
             time.sleep(0.8)
@@ -150,7 +173,7 @@ def cadastrar_aluno():
     cv2.destroyAllWindows()
 
     db.salvar_aluno(cpf, nome, curso, embeddings_coletados)
-    print(f"✅ {nome} cadastrado com {N_EMBEDDINGS_POR_ALUNO} embeddings!")
+    print(f"✅ {nome} cadastrado com {n_capturas} embeddings!")
 
 
 # =============================================
@@ -197,8 +220,17 @@ def reconhecer_e_registrar(horas_minimas):
     cv2.namedWindow('🔐 Acesso à Sala', cv2.WINDOW_NORMAL)
     cv2.resizeWindow('🔐 Acesso à Sala', 800, 600)
 
-    last_recognized = {}
-    print(f"\n🎥 Registros a cada {horas_minimas}h. Pressione 'Q' para sair.")
+    threshold     = config.get('threshold_similaridade')
+    cooldown_tela = config.get('tempo_entre_registros_segundos')
+    anti_spoofing = config.get('anti_spoofing_ativo')
+
+    last_recognized   = {}
+    last_unknown_saved = None
+    # pending: cpf -> {'since': datetime, 'ear_abaixo': bool}
+    pending = {}
+
+    modo = "Anti-spoofing: ON 👁️" if anti_spoofing else "Anti-spoofing: OFF ⚠️"
+    print(f"\n🎥 {modo} | Registros a cada {horas_minimas}h. Pressione 'Q' para sair.")
 
     while True:
         key = cv2.waitKey(1) & 0xFF
@@ -214,6 +246,11 @@ def reconhecer_e_registrar(horas_minimas):
         img_pil = Image.fromarray(rgb_frame)
         boxes, probs = mtcnn.detect(img_pil)
         current_time = datetime.now()
+
+        # HUD: modo de segurança no canto superior esquerdo
+        cor_hud = (0, 200, 0) if anti_spoofing else (0, 165, 255)
+        cv2.putText(frame, modo, (10, frame.shape[0] - 15),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.55, cor_hud, 2)
 
         if boxes is not None:
             for i, box in enumerate(boxes):
@@ -246,20 +283,75 @@ def reconhecer_e_registrar(horas_minimas):
                         melhor_distancia = dist
                         melhor_pessoa = (cpf, nome, curso)
 
-                if melhor_distancia < THRESHOLD_SIMILARIDADE and melhor_pessoa:
+                if melhor_distancia < threshold and melhor_pessoa:
                     cpf, nome, curso = melhor_pessoa
-                    if cpf not in last_recognized or \
-                            (current_time - last_recognized[cpf]).seconds > TEMPO_ENTRE_REGISTROS_SEGUNDOS:
-                        registrar_entrada(cpf, nome, curso, frame, horas_minimas)
-                        last_recognized[cpf] = current_time
+                    confirmado = False
 
-                    cv2.rectangle(frame, (x_min, y_min), (x_max, y_max), (0, 255, 0), 2)
-                    cv2.putText(frame, nome, (x_min, y_min - 10),
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+                    if anti_spoofing:
+                        # Inicializa estado de espera ao reconhecer pela primeira vez
+                        if cpf not in pending:
+                            pending[cpf] = {
+                                'since': current_time,
+                                'olho_fechou': False,   # fase 1: olho fechado detectado
+                                'frames_fechado': 0,    # frames consecutivos sem olhos
+                            }
+                            print(f"👁️  {nome} reconhecido(a). Pisque para confirmar.")
+
+                        estado  = pending[cpf]
+                        elapsed = (current_time - estado['since']).total_seconds()
+
+                        # Máquina de estados: olhos abertos → fechados → abertos = piscada
+                        olhos = _olhos_detectados(frame, box_clean)
+                        if olhos is not None:
+                            if not olhos:
+                                estado['frames_fechado'] += 1
+                                if estado['frames_fechado'] >= _FRAMES_OLHO_FECHADO:
+                                    estado['olho_fechou'] = True
+                            else:
+                                estado['frames_fechado'] = 0
+                                if estado['olho_fechou']:
+                                    confirmado = True
+                                    del pending[cpf]
+
+                        if not confirmado:
+                            if elapsed > _JANELA_PISCAR_SEG:
+                                del pending[cpf]
+                                print(f"⏱️  Tempo esgotado para {nome}. Posicione-se novamente.")
+                                cv2.rectangle(frame, (x_min, y_min), (x_max, y_max), (0, 165, 255), 2)
+                                cv2.putText(frame, f"{nome} - Tente novamente",
+                                            (x_min, y_min - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 165, 255), 2)
+                            else:
+                                restante = int(_JANELA_PISCAR_SEG - elapsed) + 1
+                                cv2.rectangle(frame, (x_min, y_min), (x_max, y_max), (0, 255, 255), 2)
+                                cv2.putText(frame, f"Pisque! ({restante}s)",
+                                            (x_min, y_min - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
+                    else:
+                        confirmado = True
+
+                    if confirmado:
+                        if cpf not in last_recognized or \
+                                (current_time - last_recognized[cpf]).total_seconds() > cooldown_tela:
+                            registrar_entrada(cpf, nome, curso, frame, horas_minimas)
+                            last_recognized[cpf] = current_time
+                        cv2.rectangle(frame, (x_min, y_min), (x_max, y_max), (0, 255, 0), 2)
+                        cv2.putText(frame, nome, (x_min, y_min - 10),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
                 else:
                     cv2.rectangle(frame, (x_min, y_min), (x_max, y_max), (0, 0, 255), 2)
                     cv2.putText(frame, "Desconhecido", (x_min, y_min - 10),
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+
+                    if last_unknown_saved is None or \
+                            (current_time - last_unknown_saved).total_seconds() > COOLDOWN_DESCONHECIDO_SEGUNDOS:
+                        ts_str = current_time.strftime("%Y-%m-%d %H:%M:%S")
+                        foto_path = os.path.join(
+                            FOTOS_DESCONHECIDOS_DIR,
+                            f"desconhecido_{current_time.strftime('%Y%m%d_%H%M%S')}.jpg"
+                        )
+                        cv2.imwrite(foto_path, frame)
+                        db.salvar_tentativa_desconhecida(foto_path, ts_str)
+                        last_unknown_saved = current_time
+                        print(f"⚠️  Rosto desconhecido registrado às {current_time.strftime('%H:%M:%S')}")
 
         cv2.imshow('🔐 Acesso à Sala', frame)
 
