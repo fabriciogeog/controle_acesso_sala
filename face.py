@@ -253,26 +253,36 @@ def reconhecer_e_registrar(horas_minimas):
                     cv2.FONT_HERSHEY_SIMPLEX, 0.55, cor_hud, 2)
 
         if boxes is not None:
+            # Fase 1: coleta de faces válidas do frame
+            rostos = []
             for i, box in enumerate(boxes):
                 if probs[i] < 0.9:
                     continue
-
                 try:
                     box_clean = np.array(box[:4]).astype(int)
-                    x_min, y_min, x_max, y_max = box_clean
                 except Exception:
                     continue
-
                 face_tensor = extrair_face_manualmente(img_pil, box_clean)
-                if face_tensor is None:
-                    continue
+                if face_tensor is not None:
+                    rostos.append((box_clean, face_tensor))
 
+            # Fase 2: único forward pass para todos os rostos do frame
+            rostos_com_emb = []
+            if rostos:
                 try:
+                    batch = torch.stack([ft for _, ft in rostos])
                     with torch.no_grad():
-                        emb = resnet(face_tensor.unsqueeze(0)).cpu()
-                    embedding = emb.numpy().flatten().astype(np.float32)
-                except Exception:
-                    continue
+                        embeddings_batch = resnet(batch).cpu().numpy()  # (N, 512)
+                    rostos_com_emb = [
+                        (box_clean, embeddings_batch[idx].astype(np.float32))
+                        for idx, (box_clean, _) in enumerate(rostos)
+                    ]
+                except Exception as e:
+                    print(f"❌ Erro na inferência em batch: {e}")
+
+            # Fase 3: matching e controle de acesso por rosto
+            for box_clean, embedding in rostos_com_emb:
+                x_min, y_min, x_max, y_max = box_clean
 
                 # Menor distância entre todos os embeddings de cada pessoa
                 melhor_distancia = float('inf')
@@ -288,19 +298,17 @@ def reconhecer_e_registrar(horas_minimas):
                     confirmado = False
 
                     if anti_spoofing:
-                        # Inicializa estado de espera ao reconhecer pela primeira vez
                         if cpf not in pending:
                             pending[cpf] = {
                                 'since': current_time,
-                                'olho_fechou': False,   # fase 1: olho fechado detectado
-                                'frames_fechado': 0,    # frames consecutivos sem olhos
+                                'olho_fechou': False,
+                                'frames_fechado': 0,
                             }
                             print(f"👁️  {nome} reconhecido(a). Pisque para confirmar.")
 
                         estado  = pending[cpf]
                         elapsed = (current_time - estado['since']).total_seconds()
 
-                        # Máquina de estados: olhos abertos → fechados → abertos = piscada
                         olhos = _olhos_detectados(frame, box_clean)
                         if olhos is not None:
                             if not olhos:
