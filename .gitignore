@@ -16,4 +16,4 @@ __pycache__/
 *.log
 
 # Banco de dados
-*.db
+*.dbanti_spoof_model.pth

@@ -9,6 +9,7 @@ from facenet_pytorch import MTCNN, InceptionResnetV1
 
 import db
 import config
+import minifasnet
 
 # =============================================
 # CONFIGURAÇÕES
@@ -27,26 +28,9 @@ os.makedirs(FOTOS_DESCONHECIDOS_DIR, exist_ok=True)
 mtcnn = MTCNN(keep_all=False, device=DEVICE, selection_method='largest')
 resnet = InceptionResnetV1(pretrained='vggface2').eval().to(DEVICE)
 
-# Detector de olhos (anti-spoofing via blink detection)
-# Haar cascade já embutido no OpenCV — zero dependências extras
-_eye_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_eye.xml')
-
-_FRAMES_OLHO_FECHADO = 2   # frames consecutivos sem olhos para confirmar fechamento
-_JANELA_PISCAR_SEG   = 6   # segundos para o usuário piscar
-
-
-# =============================================
-# ANTI-SPOOFING (blink detection)
-# =============================================
-def _olhos_detectados(frame_bgr, box_clean):
-    """Retorna True se olhos detectados no ROI do rosto, False se não, None se ROI inválido."""
-    x_min, y_min, x_max, y_max = box_clean
-    roi = frame_bgr[y_min:y_max, x_min:x_max]
-    if roi.size == 0:
-        return None
-    gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
-    eyes = _eye_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(15, 15))
-    return len(eyes) > 0
+# Anti-spoofing passivo: MiniFASNetV2 avalia cada frame (~0.43M params, 80x80)
+_N_FRAMES_REAL       = 3   # frames consecutivos acima do threshold para confirmar
+_TIMEOUT_LIVENESS_SEG = 10  # descarta pending após N segundos sem confirmação
 
 
 # =============================================
@@ -209,6 +193,9 @@ def reconhecer_e_registrar(horas_minimas):
         print("⚠️ Nenhum aluno cadastrado.")
         return
 
+    if config.get('anti_spoofing_ativo'):
+        minifasnet.carregar_modelo()  # aquece o modelo antes de abrir a câmera
+
     cv2.destroyAllWindows()
     time.sleep(0.2)
 
@@ -224,9 +211,9 @@ def reconhecer_e_registrar(horas_minimas):
     cooldown_tela = config.get('tempo_entre_registros_segundos')
     anti_spoofing = config.get('anti_spoofing_ativo')
 
-    last_recognized   = {}
+    last_recognized    = {}
     last_unknown_saved = None
-    # pending: cpf -> {'since': datetime, 'ear_abaixo': bool}
+    # pending: cpf -> {'since': datetime, 'frames_reais': int}
     pending = {}
 
     modo = "Anti-spoofing: ON 👁️" if anti_spoofing else "Anti-spoofing: OFF ⚠️"
@@ -299,40 +286,32 @@ def reconhecer_e_registrar(horas_minimas):
 
                     if anti_spoofing:
                         if cpf not in pending:
-                            pending[cpf] = {
-                                'since': current_time,
-                                'olho_fechou': False,
-                                'frames_fechado': 0,
-                            }
-                            print(f"👁️  {nome} reconhecido(a). Pisque para confirmar.")
+                            pending[cpf] = {'since': current_time, 'frames_reais': 0}
 
                         estado  = pending[cpf]
                         elapsed = (current_time - estado['since']).total_seconds()
+                        score   = minifasnet.prever_liveness(frame, box_clean)
 
-                        olhos = _olhos_detectados(frame, box_clean)
-                        if olhos is not None:
-                            if not olhos:
-                                estado['frames_fechado'] += 1
-                                if estado['frames_fechado'] >= _FRAMES_OLHO_FECHADO:
-                                    estado['olho_fechou'] = True
-                            else:
-                                estado['frames_fechado'] = 0
-                                if estado['olho_fechou']:
-                                    confirmado = True
-                                    del pending[cpf]
+                        if score >= minifasnet.THRESHOLD:
+                            estado['frames_reais'] += 1
+                            if estado['frames_reais'] >= _N_FRAMES_REAL:
+                                confirmado = True
+                                del pending[cpf]
+                        else:
+                            estado['frames_reais'] = 0  # reinicia contagem ao detectar spoof
 
                         if not confirmado:
-                            if elapsed > _JANELA_PISCAR_SEG:
+                            if elapsed > _TIMEOUT_LIVENESS_SEG:
                                 del pending[cpf]
-                                print(f"⏱️  Tempo esgotado para {nome}. Posicione-se novamente.")
-                                cv2.rectangle(frame, (x_min, y_min), (x_max, y_max), (0, 165, 255), 2)
-                                cv2.putText(frame, f"{nome} - Tente novamente",
-                                            (x_min, y_min - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 165, 255), 2)
+                            elif score < minifasnet.THRESHOLD:
+                                cv2.rectangle(frame, (x_min, y_min), (x_max, y_max), (0, 0, 200), 2)
+                                cv2.putText(frame, f"{nome} - Spoof!",
+                                            (x_min, y_min - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 200), 2)
                             else:
-                                restante = int(_JANELA_PISCAR_SEG - elapsed) + 1
+                                pct = int(score * 100)
                                 cv2.rectangle(frame, (x_min, y_min), (x_max, y_max), (0, 255, 255), 2)
-                                cv2.putText(frame, f"Pisque! ({restante}s)",
-                                            (x_min, y_min - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
+                                cv2.putText(frame, f"Verificando... {pct}%",
+                                            (x_min, y_min - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 255, 255), 2)
                     else:
                         confirmado = True
 
