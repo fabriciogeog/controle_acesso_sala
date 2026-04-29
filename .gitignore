@@ -16,4 +16,7 @@ __pycache__/
 *.log
 
 # Banco de dados
-*.dbanti_spoof_model.pth
+*.db
+
+# Pesos do modelo (binário grande, baixar via setup)
+anti_spoof_model.pth

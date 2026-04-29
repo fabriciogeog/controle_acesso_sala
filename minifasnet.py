@@ -7,6 +7,7 @@ import os
 import cv2
 import torch
 import numpy as np
+import urllib.request
 from collections import OrderedDict
 from torch.nn import (
     Linear, Conv2d, BatchNorm1d, BatchNorm2d, PReLU, ReLU, Sigmoid,
@@ -142,7 +143,34 @@ _CONV6_KER   = (5, 5)   # get_kernel(80, 80) = ((80+15)//16, ...) = (5, 5)
 CLASSE_REAL  = 1         # índice da classe "rosto real" (0=spoof, 1=real, 2=spoof)
 THRESHOLD    = 0.55      # probabilidade mínima para confirmar rosto real
 
+_MODELO_URL = (
+    "https://github.com/minivision-ai/Silent-Face-Anti-Spoofing"
+    "/raw/master/resources/anti_spoof_models/2.7_80x80_MiniFASNetV2.pth"
+)
+
 _model_cache = None
+
+
+def _baixar_modelo():
+    print(f"⬇️  Baixando pesos do MiniFASNet (~1.7 MB)...")
+    tmp = MODELO_PATH + ".tmp"
+    try:
+        def _progresso(n_blocos, tam_bloco, tam_total):
+            if tam_total > 0:
+                pct = min(100, n_blocos * tam_bloco * 100 // tam_total)
+                print(f"\r   {pct}%", end="", flush=True)
+        urllib.request.urlretrieve(_MODELO_URL, tmp, reporthook=_progresso)
+        print()  # quebra linha após a barra
+        os.replace(tmp, MODELO_PATH)
+        print(f"✅ Modelo salvo em '{MODELO_PATH}'.")
+    except Exception as exc:
+        if os.path.exists(tmp):
+            os.remove(tmp)
+        raise RuntimeError(
+            f"Falha ao baixar o modelo: {exc}\n"
+            f"Baixe manualmente com:\n"
+            f"  curl -L -o {MODELO_PATH} '{_MODELO_URL}'"
+        ) from exc
 
 
 def carregar_modelo():
@@ -151,13 +179,7 @@ def carregar_modelo():
         return _model_cache
 
     if not os.path.exists(MODELO_PATH):
-        raise FileNotFoundError(
-            f"Modelo anti-spoofing não encontrado: '{MODELO_PATH}'\n"
-            "Baixe com:\n"
-            "  curl -L -o anti_spoof_model.pth \\\n"
-            "    https://raw.githubusercontent.com/minivision-ai/Silent-Face-Anti-Spoofing"
-            "/master/resources/anti_spoof_models/2.7_80x80_MiniFASNetV2.pth"
-        )
+        _baixar_modelo()
 
     model = _MiniFASNetV2(conv6_kernel=_CONV6_KER)
     state_dict = torch.load(MODELO_PATH, map_location='cpu', weights_only=True)

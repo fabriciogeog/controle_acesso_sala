@@ -12,6 +12,13 @@ pip install -r requirements.txt
 
 Requires Python 3.12 and a working webcam. GPU (CUDA) is used automatically if available, otherwise falls back to CPU.
 
+O arquivo de pesos `anti_spoof_model.pth` não está no repositório (binário ~1.7 MB). Ele é **baixado automaticamente** na primeira execução que ativar o anti-spoofing. Para baixar manualmente:
+
+```bash
+curl -L -o anti_spoof_model.pth \
+  "https://github.com/minivision-ai/Silent-Face-Anti-Spoofing/raw/master/resources/anti_spoof_models/2.7_80x80_MiniFASNetV2.pth"
+```
+
 ## Running
 
 ```bash
