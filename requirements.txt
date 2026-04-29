@@ -7,7 +7,7 @@ opencv-python>=4.8.0
 numpy>=1.21.0
 
 # Para manipulação de imagens (usado internamente pelo facenet-pytorch e OpenCV)
-Pillow>=9.0.0
+Pillow>=10.4.0
 
 # Não necessário instalar separadamente (faz parte da lib padrão), mas listado para documentação
 # sqlite3 (builtin do Python)
