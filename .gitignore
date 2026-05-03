@@ -20,3 +20,7 @@ __pycache__/
 
 # Pesos do modelo (binário grande, baixar via setup)
 anti_spoof_model.pth
+
+# Fotos capturadas (dados pessoais, não versionar)
+fotos_registros/
+fotos_desconhecidos/
