@@ -1,3 +1,5 @@
+import hashlib
+import secrets
 import sqlite3
 import numpy as np
 
@@ -227,6 +229,76 @@ def listar_tentativas(data_inicio=None, data_fim=None):
         cursor = conn.cursor()
         cursor.execute(query, params)
         return cursor.fetchall()
+
+
+# =============================================
+# USUÁRIOS DO SISTEMA
+# =============================================
+def init_usuarios():
+    """Cria a tabela de usuários do sistema se não existir."""
+    with sqlite3.connect(DATABASE) as conn:
+        conn.execute('''
+            CREATE TABLE IF NOT EXISTS usuarios (
+                username TEXT PRIMARY KEY,
+                senha_hash TEXT NOT NULL,
+                salt TEXT NOT NULL
+            )
+        ''')
+
+
+def _hash_senha(senha, salt=None):
+    if salt is None:
+        salt = secrets.token_hex(16)
+    h = hashlib.sha256((senha + salt).encode('utf-8')).hexdigest()
+    return h, salt
+
+
+def criar_usuario(username, senha):
+    h, salt = _hash_senha(senha)
+    with sqlite3.connect(DATABASE) as conn:
+        conn.execute(
+            'INSERT INTO usuarios (username, senha_hash, salt) VALUES (?, ?, ?)',
+            (username, h, salt)
+        )
+
+
+def verificar_usuario(username, senha):
+    """Retorna True se as credenciais forem válidas."""
+    with sqlite3.connect(DATABASE) as conn:
+        row = conn.execute(
+            'SELECT senha_hash, salt FROM usuarios WHERE username = ?', (username,)
+        ).fetchone()
+    if row is None:
+        return False
+    h, _ = _hash_senha(senha, row[1])
+    return h == row[0]
+
+
+def listar_usuarios():
+    """Retorna lista de usernames ordenada."""
+    with sqlite3.connect(DATABASE) as conn:
+        return [r[0] for r in conn.execute(
+            'SELECT username FROM usuarios ORDER BY username'
+        ).fetchall()]
+
+
+def remover_usuario(username):
+    with sqlite3.connect(DATABASE) as conn:
+        conn.execute('DELETE FROM usuarios WHERE username = ?', (username,))
+
+
+def alterar_senha(username, nova_senha):
+    h, salt = _hash_senha(nova_senha)
+    with sqlite3.connect(DATABASE) as conn:
+        conn.execute(
+            'UPDATE usuarios SET senha_hash = ?, salt = ? WHERE username = ?',
+            (h, salt, username)
+        )
+
+
+def count_usuarios():
+    with sqlite3.connect(DATABASE) as conn:
+        return conn.execute('SELECT COUNT(*) FROM usuarios').fetchone()[0]
 
 
 def salvar_registro(cpf, nome, curso, timestamp_str, foto_path):

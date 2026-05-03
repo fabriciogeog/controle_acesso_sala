@@ -141,7 +141,7 @@ MODELO_PATH  = 'anti_spoof_model.pth'
 _INPUT_SIZE  = (80, 80)
 _CONV6_KER   = (5, 5)   # get_kernel(80, 80) = ((80+15)//16, ...) = (5, 5)
 CLASSE_REAL  = 1         # índice da classe "rosto real" (0=spoof, 1=real, 2=spoof)
-THRESHOLD    = 0.55      # probabilidade mínima para confirmar rosto real
+THRESHOLD    = 0.40      # probabilidade mínima para confirmar rosto real
 
 _MODELO_URL = (
     "https://github.com/minivision-ai/Silent-Face-Anti-Spoofing"
@@ -196,23 +196,31 @@ def prever_liveness(frame_bgr, box_clean):
     """
     Retorna probabilidade [0,1] de ser rosto real.
     >= THRESHOLD → real  |  < THRESHOLD → spoof.
+    Espera frame BGR em escala [0,255] (como vem de cap.read).
+    O modelo foi treinado com pixels inteiros 0-255; dividir por 255 colapsa o BN.
     """
     x_min, y_min, x_max, y_max = box_clean
-    margem = int(max(x_max - x_min, y_max - y_min) * 0.15)
+    # escala 2.7 = valor original do repositório minivision para este modelo
+    _SCALE = 2.7
     ih, iw = frame_bgr.shape[:2]
-    x1 = max(0, x_min - margem)
-    y1 = max(0, y_min - margem)
-    x2 = min(iw, x_max + margem)
-    y2 = min(ih, y_max + margem)
+    cx = (x_min + x_max) // 2
+    cy = (y_min + y_max) // 2
+    hw = int((x_max - x_min) * _SCALE / 2)
+    hh = int((y_max - y_min) * _SCALE / 2)
+    x1 = max(0, cx - hw)
+    y1 = max(0, cy - hh)
+    x2 = min(iw, cx + hw)
+    y2 = min(ih, cy + hh)
 
     crop = frame_bgr[y1:y2, x1:x2]
     if crop.size == 0:
         return 0.0
 
-    crop_rgb = cv2.cvtColor(cv2.resize(crop, _INPUT_SIZE), cv2.COLOR_BGR2RGB)
-    tensor   = torch.from_numpy(crop_rgb).permute(2, 0, 1).float().div(255.0).unsqueeze(0)
+    crop_bgr = cv2.resize(crop, _INPUT_SIZE)
+    tensor   = torch.from_numpy(crop_bgr).permute(2, 0, 1).float().unsqueeze(0)
 
     model = carregar_modelo()
     with torch.no_grad():
         probs = torch.softmax(model(tensor), dim=1).cpu().numpy()[0]
+    print(f"[DEBUG spoof] spoof0={probs[0]:.3f} real={probs[1]:.3f} spoof2={probs[2]:.3f}")
     return float(probs[CLASSE_REAL])

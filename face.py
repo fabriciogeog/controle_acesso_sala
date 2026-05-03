@@ -1,3 +1,6 @@
+import warnings
+warnings.filterwarnings('ignore', message='.*CUDA initialization.*', category=UserWarning)
+
 import cv2
 import torch
 import numpy as np
@@ -29,7 +32,7 @@ mtcnn = MTCNN(keep_all=False, device=DEVICE, selection_method='largest')
 resnet = InceptionResnetV1(pretrained='vggface2').eval().to(DEVICE)
 
 # Anti-spoofing passivo: MiniFASNetV2 avalia cada frame (~0.43M params, 80x80)
-_N_FRAMES_REAL       = 3   # frames consecutivos acima do threshold para confirmar
+_N_FRAMES_REAL       = 5   # frames acima do threshold para confirmar (threshold baixo exige mais evidência)
 _TIMEOUT_LIVENESS_SEG = 10  # descarta pending após N segundos sem confirmação
 
 
@@ -298,7 +301,7 @@ def reconhecer_e_registrar(horas_minimas):
                                 confirmado = True
                                 del pending[cpf]
                         else:
-                            estado['frames_reais'] = 0  # reinicia contagem ao detectar spoof
+                            estado['frames_reais'] = max(0, estado['frames_reais'] - 1)
 
                         if not confirmado:
                             if elapsed > _TIMEOUT_LIVENESS_SEG:

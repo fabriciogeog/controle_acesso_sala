@@ -265,4 +265,5 @@ def menu():
 
 
 if __name__ == "__main__":
-    menu()
+    from gui import main
+    main()
