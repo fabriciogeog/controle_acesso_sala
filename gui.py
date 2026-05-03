@@ -673,6 +673,8 @@ class App(tk.Tk):
             self._cadastro_mode = False
             self._btn_cad.config(state="normal")
             self._cad_progress.set(f"✅ {cad['nome']} cadastrado com {total} embeddings!")
+            for v in self._cad_vars.values():
+                v.set("")
 
         return display
 
