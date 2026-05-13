@@ -210,7 +210,19 @@ class App(tk.Tk):
 
         # Login bem-sucedido — configura e exibe a janela principal
         self.title("Controle de Acesso — Reconhecimento Facial")
-        self.resizable(False, False)
+        self.resizable(True, True)
+
+        # Escala a câmera para caber dentro de ~92% da altura disponível,
+        # descontando o chrome do OS (~70 px) e os controles abaixo da câmera (~210 px).
+        sw = self.winfo_screenwidth()
+        sh = self.winfo_screenheight()
+        avail_h = int(sh * 0.92) - 280
+        avail_w = int(sw * 0.95) - 560
+        scale = max(0.5, min(1.0, avail_h / _CAM_H, avail_w / _CAM_W))
+        self._disp_w = int(_CAM_W * scale)
+        self._disp_h = int(_CAM_H * scale)
+        _center_window(self, self._disp_w + 570, self._disp_h + 210)
+        self.minsize(820, 530)
 
         self._cap       = None
         self._cam_state = _CamState.OFF
@@ -260,7 +272,7 @@ class App(tk.Tk):
         left = tk.Frame(self, bg="#1a1a2e")
         left.grid(row=0, column=0, sticky="nsew")
 
-        blank = Image.new("RGB", (_CAM_W, _CAM_H), (13, 13, 26))
+        blank = Image.new("RGB", (self._disp_w, self._disp_h), (13, 13, 26))
         self._placeholder_photo = ImageTk.PhotoImage(blank)
 
         self._cam_label = tk.Label(left, image=self._placeholder_photo, bg="#0d0d1a")
@@ -282,9 +294,9 @@ class App(tk.Tk):
 
         tk.Label(left, text="Últimos registros", bg="#1a1a2e", fg="#7777aa",
                  font=("Helvetica", 9, "bold")).pack(anchor="w", padx=10, pady=(8, 0))
-        self._log_text = tk.Text(left, height=5, width=52, bg="#0d0d1a", fg="#ccccee",
+        self._log_text = tk.Text(left, height=5, bg="#0d0d1a", fg="#ccccee",
                                   font=("Courier", 9), state="disabled", relief="flat")
-        self._log_text.pack(padx=8, pady=(0, 8))
+        self._log_text.pack(padx=8, pady=(0, 8), fill="x")
 
     def _build_right(self):
         right = tk.Frame(self, bg="#f0f0f5")
@@ -409,7 +421,7 @@ class App(tk.Tk):
 
     def _show_frame(self, frame_bgr):
         rgb         = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
-        img         = Image.fromarray(rgb).resize((_CAM_W, _CAM_H))
+        img         = Image.fromarray(rgb).resize((self._disp_w, self._disp_h))
         self._photo = ImageTk.PhotoImage(img)
         self._cam_label.config(image=self._photo)
 
