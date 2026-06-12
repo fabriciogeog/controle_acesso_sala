@@ -9,6 +9,9 @@ numpy>=1.21.0
 # Para manipulação de imagens (usado internamente pelo facenet-pytorch e OpenCV)
 Pillow>=10.4.0
 
+# Seleção de datas via calendário na GUI (aba Relatórios)
+tkcalendar>=1.6.1
+
 # Não necessário instalar separadamente (faz parte da lib padrão), mas listado para documentação
 # sqlite3 (builtin do Python)
 

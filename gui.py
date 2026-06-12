@@ -2,7 +2,6 @@
 
 import csv
 import os
-import re
 import time
 import tkinter as tk
 from tkinter import messagebox, ttk
@@ -13,6 +12,7 @@ import cv2
 import numpy as np
 import torch
 from PIL import Image, ImageTk
+from tkcalendar import DateEntry
 
 import config
 import db
@@ -30,8 +30,6 @@ class _CamState(Enum):
 _POLL_ON_MS      = 30
 _POLL_STANDBY_MS = 2000
 _CAM_W, _CAM_H   = 640, 480
-
-_PLACEHOLDER_DATA = "dd/mm/aaaa"
 
 
 def _center_window(win, w, h):
@@ -885,6 +883,9 @@ class App(tk.Tk):
         tk.Label(row_filtro, text="Até:", bg="#f0f0f5").pack(side="left", padx=(10, 2))
         self._rel_fim = self._make_date_entry(row_filtro)
         self._rel_fim.pack(side="left")
+        # Inicia sem data selecionada → sem filtro (mostra tudo).
+        self._rel_ini.delete(0, "end")
+        self._rel_fim.delete(0, "end")
 
         tk.Button(row_filtro, text="Filtrar", command=self._refresh_relatorios,
                   bg="#3498db", fg="white", relief="flat",
@@ -907,54 +908,25 @@ class App(tk.Tk):
         sb.grid(row=0, column=1, sticky="ns")
         self._tree_rel.config(yscrollcommand=sb.set)
 
-    # ---- entradas de data no padrão Brasil (dd/mm/aaaa) ----
+    # ---- seleção de data via calendário (tkcalendar, padrão Brasil) ----
     def _make_date_entry(self, parent):
-        e = tk.Entry(parent, width=12, font=("Helvetica", 9), fg="#999999")
-        e.insert(0, _PLACEHOLDER_DATA)
-        e.bind("<FocusIn>",   lambda _ev, w=e: self._date_focus_in(w))
-        e.bind("<FocusOut>",  lambda _ev, w=e: self._date_focus_out(w))
-        e.bind("<KeyRelease>", lambda ev, w=e: self._date_keyrelease(w, ev))
-        return e
-
-    def _date_focus_in(self, e):
-        if e.get() == _PLACEHOLDER_DATA:
-            e.delete(0, "end")
-            e.config(fg="#000000")
-
-    def _date_focus_out(self, e):
-        if not e.get().strip():
-            e.delete(0, "end")
-            e.insert(0, _PLACEHOLDER_DATA)
-            e.config(fg="#999999")
-
-    def _date_keyrelease(self, e, ev):
-        if ev.keysym in ("BackSpace", "Delete", "Left", "Right", "Tab"):
-            return
-        digits = re.sub(r"\D", "", e.get())[:8]
-        out = digits[:2]
-        if len(digits) > 2:
-            out += "/" + digits[2:4]
-        if len(digits) > 4:
-            out += "/" + digits[4:8]
-        e.delete(0, "end")
-        e.insert(0, out)
-        e.config(fg="#000000")
+        return DateEntry(parent, width=11, font=("Helvetica", 9),
+                         date_pattern="dd/mm/yyyy", locale="pt_BR",
+                         background="#3498db", foreground="white",
+                         borderwidth=1)
 
     def _date_iso(self, e):
-        """Retorna (iso|None, ok). Vazio/placeholder → (None, True); inválido → (None, False)."""
-        texto = e.get().strip()
-        if not texto or texto == _PLACEHOLDER_DATA:
+        """Retorna (iso|None, ok). Vazio → (None, True); inválido → (None, False)."""
+        if not e.get().strip():
             return None, True
         try:
-            return datetime.strptime(texto, "%d/%m/%Y").strftime("%Y-%m-%d"), True
-        except ValueError:
+            return e.get_date().strftime("%Y-%m-%d"), True
+        except Exception:
             return None, False
 
     def _limpar_filtro(self):
         for e in (self._rel_ini, self._rel_fim):
             e.delete(0, "end")
-            e.insert(0, _PLACEHOLDER_DATA)
-            e.config(fg="#999999")
         self._refresh_relatorios()
 
     def _refresh_relatorios(self):
@@ -964,7 +936,7 @@ class App(tk.Tk):
         data_fim,    ok_fim = self._date_iso(self._rel_fim)
         if not ok_ini or not ok_fim:
             messagebox.showwarning("Relatórios",
-                                   "Data inválida. Use o formato dd/mm/aaaa.")
+                                   "Data inválida. Selecione a data no calendário.")
             return
         if data_fim:
             data_fim += " 23:59:59"
