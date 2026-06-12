@@ -2,6 +2,7 @@
 
 import csv
 import os
+import re
 import time
 import tkinter as tk
 from tkinter import messagebox, ttk
@@ -17,6 +18,7 @@ import config
 import db
 import face
 import minifasnet
+import validacao
 
 
 class _CamState(Enum):
@@ -28,6 +30,8 @@ class _CamState(Enum):
 _POLL_ON_MS      = 30
 _POLL_STANDBY_MS = 2000
 _CAM_W, _CAM_H   = 640, 480
+
+_PLACEHOLDER_DATA = "dd/mm/aaaa"
 
 
 def _center_window(win, w, h):
@@ -104,7 +108,7 @@ class _PrimeiroAcessoDialog(tk.Toplevel):
             self._msg_var.set("As senhas não coincidem.")
             return
 
-        db.criar_usuario(user, senha)
+        db.criar_usuario(user, senha, perfil='admin')
         self.result = True
         self.destroy()
 
@@ -123,6 +127,7 @@ class _LoginDialog(tk.Toplevel):
     def __init__(self, parent):
         super().__init__(parent)
         self.result     = False
+        self.perfil     = None
         self._tentativas = 0
         self.title("Acesso ao Sistema")
         self.resizable(False, False)
@@ -168,8 +173,10 @@ class _LoginDialog(tk.Toplevel):
         user  = self._e_user.get().strip()
         senha = self._e_pass.get()
 
-        if db.verificar_usuario(user, senha):
+        perfil = db.verificar_usuario(user, senha)
+        if perfil is not None:
             self.result = True
+            self.perfil = perfil
             self.destroy()
             return
 
@@ -185,6 +192,74 @@ class _LoginDialog(tk.Toplevel):
 
     def _cancelar(self):
         self.destroy()  # result = False → App encerra
+
+
+# =========================================================
+# DIÁLOGO — EDITAR ALUNO
+# =========================================================
+class _EditarAlunoDialog(tk.Toplevel):
+    """Edita Nome e Curso de um aluno; o CPF permanece fixo (somente leitura)."""
+
+    def __init__(self, parent, cpf, nome, curso):
+        super().__init__(parent)
+        self.result = None
+        self.title("Editar Aluno")
+        self.resizable(False, False)
+        self.configure(bg="#1a1a2e")
+        self.grab_set()
+        self.protocol("WM_DELETE_WINDOW", self.destroy)
+        _center_window(self, 400, 280)
+        self._build(cpf, nome, curso)
+
+    def _build(self, cpf, nome, curso):
+        bg, fg, ef = "#1a1a2e", "#e0e0f0", "#2c3e50"
+
+        tk.Label(self, text="Editar Aluno", bg=bg, fg="#7f8fff",
+                 font=("Helvetica", 14, "bold")).pack(pady=(20, 12))
+
+        form = tk.Frame(self, bg=bg)
+        form.pack(padx=40, fill="x")
+
+        tk.Label(form, text="CPF (fixo):", bg=bg, fg=fg,
+                 font=("Helvetica", 10), anchor="w").pack(fill="x", pady=(4, 0))
+        e_cpf = tk.Entry(form, bg="#22223a", fg="#8888aa", font=("Helvetica", 11),
+                         relief="flat", disabledbackground="#22223a",
+                         disabledforeground="#8888aa")
+        e_cpf.insert(0, cpf)
+        e_cpf.config(state="disabled")
+        e_cpf.pack(fill="x", ipady=4)
+
+        self._vars = {}
+        for lbl, key, val in [("Nome completo:", "nome", nome),
+                              ("Curso:", "curso", curso)]:
+            tk.Label(form, text=lbl, bg=bg, fg=fg,
+                     font=("Helvetica", 10), anchor="w").pack(fill="x", pady=(8, 0))
+            var = tk.StringVar(value=val)
+            self._vars[key] = var
+            tk.Entry(form, textvariable=var, bg=ef, fg=fg, insertbackground=fg,
+                     font=("Helvetica", 11), relief="flat").pack(fill="x", ipady=4)
+
+        self._msg_var = tk.StringVar()
+        tk.Label(self, textvariable=self._msg_var, bg=bg, fg="#e74c3c",
+                 font=("Helvetica", 9)).pack(pady=(8, 0))
+
+        btn_row = tk.Frame(self, bg=bg)
+        btn_row.pack(pady=12)
+        tk.Button(btn_row, text="Salvar", command=self._confirmar,
+                  bg="#2ecc71", fg="white", font=("Helvetica", 11, "bold"),
+                  relief="flat", cursor="hand2", pady=6, padx=20).pack(side="left", padx=6)
+        tk.Button(btn_row, text="Cancelar", command=self.destroy,
+                  bg="#95a5a6", fg="white", font=("Helvetica", 10),
+                  relief="flat", cursor="hand2", pady=6, padx=14).pack(side="left", padx=6)
+
+    def _confirmar(self):
+        nome  = self._vars["nome"].get().strip()
+        curso = self._vars["curso"].get().strip()
+        if not nome or not curso:
+            self._msg_var.set("Preencha Nome e Curso.")
+            return
+        self.result = (nome, curso)
+        self.destroy()
 
 
 # =========================================================
@@ -238,6 +313,7 @@ class App(tk.Tk):
         self._cadastro_mode = False
         self._cadastro_data = {}
 
+        self._usr_list  = []
         self._rel_cache = None
 
         self._build_ui()
@@ -256,6 +332,7 @@ class App(tk.Tk):
     def _dialogo_login(self):
         dlg = _LoginDialog(self)
         self.wait_window(dlg)
+        self._perfil = dlg.perfil
         return dlg.result
 
     # =========================================================
@@ -306,9 +383,11 @@ class App(tk.Tk):
 
         nav = tk.Frame(right, bg="#2c3e50")
         nav.grid(row=0, column=0, sticky="ew")
-        for label, key in [("Cadastro", "cadastro"), ("Alunos", "alunos"),
-                             ("Relatórios", "relatorios"), ("Configurações", "config"),
-                             ("Usuários", "usuarios")]:
+        abas = [("Cadastro", "cadastro"), ("Alunos", "alunos"),
+                ("Relatórios", "relatorios")]
+        if self._perfil == "admin":
+            abas += [("Configurações", "config"), ("Usuários", "usuarios")]
+        for label, key in abas:
             tk.Button(nav, text=label, command=lambda k=key: self._switch_panel(k),
                       bg="#2c3e50", fg="white", font=("Helvetica", 10, "bold"),
                       relief="flat", cursor="hand2",
@@ -340,7 +419,10 @@ class App(tk.Tk):
     # =========================================================
     def _switch_panel(self, key):
         self._panels[key].tkraise()
-        if key == "alunos":
+        if key == "cadastro":
+            if not self._cadastro_mode:
+                self._cad_progress.set("")
+        elif key == "alunos":
             self._refresh_alunos()
         elif key == "relatorios":
             self._refresh_relatorios()
@@ -605,6 +687,10 @@ class App(tk.Tk):
             messagebox.showwarning("Cadastro", "Preencha todos os campos.")
             return
 
+        if not validacao.validar_cpf(cpf):
+            messagebox.showwarning("Cadastro", "CPF inválido. Verifique os dígitos.")
+            return
+
         row = db.buscar_aluno(cpf)
         if row:
             if not messagebox.askyesno("Cadastro",
@@ -689,6 +775,7 @@ class App(tk.Tk):
             self._cad_progress.set(f"✅ {cad['nome']} cadastrado com {total} embeddings!")
             for v in self._cad_vars.values():
                 v.set("")
+            self.after(6000, lambda: self._cad_progress.set(""))
 
         return display
 
@@ -723,6 +810,10 @@ class App(tk.Tk):
                   command=self._refresh_alunos,
                   bg="#3498db", fg="white", font=("Helvetica", 10),
                   relief="flat", cursor="hand2", padx=10).pack(side="left", padx=6)
+        tk.Button(btn_row, text="Editar selecionado",
+                  command=self._editar_aluno,
+                  bg="#f39c12", fg="white", font=("Helvetica", 10),
+                  relief="flat", cursor="hand2", padx=10).pack(side="left", padx=6)
         tk.Button(btn_row, text="Remover selecionado",
                   command=self._remover_aluno,
                   bg="#e74c3c", fg="white", font=("Helvetica", 10),
@@ -734,6 +825,21 @@ class App(tk.Tk):
         for cpf, nome, curso, ultimo, n_embs in db.listar_alunos():
             self._tree_alunos.insert("", "end",
                 values=(cpf, nome, curso, ultimo or "Nunca", n_embs))
+
+    def _editar_aluno(self):
+        sel = self._tree_alunos.selection()
+        if not sel:
+            messagebox.showinfo("Alunos", "Selecione um aluno para editar.")
+            return
+        vals = self._tree_alunos.item(sel[0])["values"]
+        cpf, nome, curso = str(vals[0]), str(vals[1]), str(vals[2])
+        dlg = _EditarAlunoDialog(self, cpf, nome, curso)
+        self.wait_window(dlg)
+        if dlg.result:
+            novo_nome, novo_curso = dlg.result
+            db.atualizar_aluno(cpf, novo_nome, novo_curso)
+            self._refresh_alunos()
+            self._known_people = db.carregar_alunos()
 
     def _remover_aluno(self):
         sel = self._tree_alunos.selection()
@@ -752,38 +858,46 @@ class App(tk.Tk):
     # =========================================================
     def _build_panel_relatorios(self, parent):
         parent.columnconfigure(0, weight=1)
-        parent.rowconfigure(2, weight=1)
+        parent.rowconfigure(3, weight=1)
 
         tk.Label(parent, text="Relatórios", font=("Helvetica", 14, "bold"),
                  bg="#f0f0f5").grid(row=0, column=0, pady=(16, 4))
 
-        top = tk.Frame(parent, bg="#f0f0f5")
-        top.grid(row=1, column=0, sticky="ew", padx=16, pady=4)
+        # Linha 1 — tipo de relatório
+        row_tipo = tk.Frame(parent, bg="#f0f0f5")
+        row_tipo.grid(row=1, column=0, sticky="ew", padx=16, pady=(4, 0))
 
         self._rel_tipo = tk.StringVar(value="registros")
         for txt, val in [("Registros", "registros"),
                           ("Frequência", "frequencia"),
                           ("Desconhecidos", "tentativas")]:
-            tk.Radiobutton(top, text=txt, variable=self._rel_tipo, value=val,
+            tk.Radiobutton(row_tipo, text=txt, variable=self._rel_tipo, value=val,
                            bg="#f0f0f5",
                            command=self._refresh_relatorios).pack(side="left", padx=8)
 
-        tk.Label(top, text="De:", bg="#f0f0f5").pack(side="left", padx=(12, 2))
-        self._rel_ini = tk.Entry(top, width=11, font=("Helvetica", 9))
+        # Linha 2 — período e ações
+        row_filtro = tk.Frame(parent, bg="#f0f0f5")
+        row_filtro.grid(row=2, column=0, sticky="ew", padx=16, pady=(2, 6))
+
+        tk.Label(row_filtro, text="De:", bg="#f0f0f5").pack(side="left", padx=(0, 2))
+        self._rel_ini = self._make_date_entry(row_filtro)
         self._rel_ini.pack(side="left")
-        tk.Label(top, text="Até:", bg="#f0f0f5").pack(side="left", padx=(8, 2))
-        self._rel_fim = tk.Entry(top, width=11, font=("Helvetica", 9))
+        tk.Label(row_filtro, text="Até:", bg="#f0f0f5").pack(side="left", padx=(10, 2))
+        self._rel_fim = self._make_date_entry(row_filtro)
         self._rel_fim.pack(side="left")
 
-        tk.Button(top, text="Filtrar", command=self._refresh_relatorios,
+        tk.Button(row_filtro, text="Filtrar", command=self._refresh_relatorios,
                   bg="#3498db", fg="white", relief="flat",
-                  cursor="hand2", padx=6).pack(side="left", padx=6)
-        tk.Button(top, text="Exportar CSV", command=self._exportar_csv,
+                  cursor="hand2", padx=8).pack(side="left", padx=(12, 4))
+        tk.Button(row_filtro, text="Limpar", command=self._limpar_filtro,
+                  bg="#95a5a6", fg="white", relief="flat",
+                  cursor="hand2", padx=8).pack(side="left", padx=4)
+        tk.Button(row_filtro, text="Exportar CSV", command=self._exportar_csv,
                   bg="#27ae60", fg="white", relief="flat",
-                  cursor="hand2", padx=6).pack(side="left")
+                  cursor="hand2", padx=8).pack(side="left", padx=4)
 
         tf = tk.Frame(parent)
-        tf.grid(row=2, column=0, sticky="nsew", padx=16, pady=4)
+        tf.grid(row=3, column=0, sticky="nsew", padx=16, pady=4)
         tf.columnconfigure(0, weight=1)
         tf.rowconfigure(0, weight=1)
 
@@ -793,10 +907,65 @@ class App(tk.Tk):
         sb.grid(row=0, column=1, sticky="ns")
         self._tree_rel.config(yscrollcommand=sb.set)
 
+    # ---- entradas de data no padrão Brasil (dd/mm/aaaa) ----
+    def _make_date_entry(self, parent):
+        e = tk.Entry(parent, width=12, font=("Helvetica", 9), fg="#999999")
+        e.insert(0, _PLACEHOLDER_DATA)
+        e.bind("<FocusIn>",   lambda _ev, w=e: self._date_focus_in(w))
+        e.bind("<FocusOut>",  lambda _ev, w=e: self._date_focus_out(w))
+        e.bind("<KeyRelease>", lambda ev, w=e: self._date_keyrelease(w, ev))
+        return e
+
+    def _date_focus_in(self, e):
+        if e.get() == _PLACEHOLDER_DATA:
+            e.delete(0, "end")
+            e.config(fg="#000000")
+
+    def _date_focus_out(self, e):
+        if not e.get().strip():
+            e.delete(0, "end")
+            e.insert(0, _PLACEHOLDER_DATA)
+            e.config(fg="#999999")
+
+    def _date_keyrelease(self, e, ev):
+        if ev.keysym in ("BackSpace", "Delete", "Left", "Right", "Tab"):
+            return
+        digits = re.sub(r"\D", "", e.get())[:8]
+        out = digits[:2]
+        if len(digits) > 2:
+            out += "/" + digits[2:4]
+        if len(digits) > 4:
+            out += "/" + digits[4:8]
+        e.delete(0, "end")
+        e.insert(0, out)
+        e.config(fg="#000000")
+
+    def _date_iso(self, e):
+        """Retorna (iso|None, ok). Vazio/placeholder → (None, True); inválido → (None, False)."""
+        texto = e.get().strip()
+        if not texto or texto == _PLACEHOLDER_DATA:
+            return None, True
+        try:
+            return datetime.strptime(texto, "%d/%m/%Y").strftime("%Y-%m-%d"), True
+        except ValueError:
+            return None, False
+
+    def _limpar_filtro(self):
+        for e in (self._rel_ini, self._rel_fim):
+            e.delete(0, "end")
+            e.insert(0, _PLACEHOLDER_DATA)
+            e.config(fg="#999999")
+        self._refresh_relatorios()
+
     def _refresh_relatorios(self):
-        tipo        = self._rel_tipo.get()
-        data_inicio = self._rel_ini.get().strip() or None
-        data_fim    = self._rel_fim.get().strip() or None
+        tipo = self._rel_tipo.get()
+
+        data_inicio, ok_ini = self._date_iso(self._rel_ini)
+        data_fim,    ok_fim = self._date_iso(self._rel_fim)
+        if not ok_ini or not ok_fim:
+            messagebox.showwarning("Relatórios",
+                                   "Data inválida. Use o formato dd/mm/aaaa.")
+            return
         if data_fim:
             data_fim += " 23:59:59"
 
@@ -950,14 +1119,23 @@ class App(tk.Tk):
                      show="•" if secret else "").grid(row=i, column=1, sticky="ew",
                                                        padx=(0, 8), pady=4)
 
+        tk.Label(add_frame, text="Perfil:", bg="#f0f0f5",
+                 font=("Helvetica", 10)).grid(row=3, column=0, sticky="w", padx=8, pady=4)
+        self._usr_add_perfil = tk.StringVar(value="operador")
+        perfil_row = tk.Frame(add_frame, bg="#f0f0f5")
+        perfil_row.grid(row=3, column=1, sticky="w", padx=(0, 8), pady=4)
+        for txt, val in [("Operador", "operador"), ("Administrador", "admin")]:
+            tk.Radiobutton(perfil_row, text=txt, variable=self._usr_add_perfil,
+                           value=val, bg="#f0f0f5").pack(side="left", padx=(0, 8))
+
         self._usr_add_msg = tk.StringVar()
         tk.Label(add_frame, textvariable=self._usr_add_msg,
                  bg="#f0f0f5", fg="#e74c3c",
-                 font=("Helvetica", 9)).grid(row=3, column=0, columnspan=2)
+                 font=("Helvetica", 9)).grid(row=4, column=0, columnspan=2)
         tk.Button(add_frame, text="Adicionar", command=self._adicionar_usuario,
                   bg="#3498db", fg="white", font=("Helvetica", 10, "bold"),
                   relief="flat", cursor="hand2",
-                  padx=10).grid(row=4, column=0, columnspan=2, pady=6)
+                  padx=10).grid(row=5, column=0, columnspan=2, pady=6)
 
         # alterar senha
         pw_frame = tk.LabelFrame(parent, text=" Alterar senha do usuário selecionado ",
@@ -994,13 +1172,17 @@ class App(tk.Tk):
 
     def _refresh_usuarios(self):
         self._lb_usuarios.delete(0, "end")
-        for u in db.listar_usuarios():
-            self._lb_usuarios.insert("end", u)
+        self._usr_list = []
+        for u, perfil in db.listar_usuarios_perfis():
+            self._usr_list.append(u)
+            rotulo = "Administrador" if perfil == "admin" else "Operador"
+            self._lb_usuarios.insert("end", f"{u}  ({rotulo})")
 
     def _adicionar_usuario(self):
-        user  = self._usr_add_vars["user"].get().strip()
-        senha = self._usr_add_vars["pass"].get()
-        conf  = self._usr_add_vars["pass2"].get()
+        user   = self._usr_add_vars["user"].get().strip()
+        senha  = self._usr_add_vars["pass"].get()
+        conf   = self._usr_add_vars["pass2"].get()
+        perfil = self._usr_add_perfil.get()
 
         if not user or " " in user:
             self._usr_add_msg.set("Usuário inválido (sem espaços).")
@@ -1015,9 +1197,10 @@ class App(tk.Tk):
             self._usr_add_msg.set("As senhas não coincidem.")
             return
 
-        db.criar_usuario(user, senha)
+        db.criar_usuario(user, senha, perfil=perfil)
         for v in self._usr_add_vars.values():
             v.set("")
+        self._usr_add_perfil.set("operador")
         self._usr_add_msg.set(f"✅ Usuário '{user}' criado.")
         self._refresh_usuarios()
         self.after(3000, lambda: self._usr_add_msg.set(""))
@@ -1027,7 +1210,7 @@ class App(tk.Tk):
         if not sel:
             self._usr_pw_msg.set("Selecione um usuário na lista.")
             return
-        user  = self._lb_usuarios.get(sel[0])
+        user  = self._usr_list[sel[0]]
         senha = self._usr_pw_vars["pass"].get()
         conf  = self._usr_pw_vars["pass2"].get()
 
@@ -1049,7 +1232,7 @@ class App(tk.Tk):
         if not sel:
             messagebox.showinfo("Usuários", "Selecione um usuário para remover.")
             return
-        user = self._lb_usuarios.get(sel[0])
+        user = self._usr_list[sel[0]]
         if db.count_usuarios() <= 1:
             messagebox.showerror("Usuários",
                 "Não é possível remover o último usuário.\nCrie outro antes.")

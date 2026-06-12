@@ -157,6 +157,17 @@ def listar_alunos():
         return cursor.fetchall()
 
 
+def atualizar_aluno(cpf, nome, curso):
+    """Atualiza nome e curso de um aluno existente. Retorna True se encontrado."""
+    with sqlite3.connect(DATABASE) as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            'UPDATE alunos SET nome = ?, curso = ? WHERE cpf = ?',
+            (nome, curso, cpf)
+        )
+        return cursor.rowcount > 0
+
+
 def remover_aluno(cpf):
     """Remove aluno e todos os seus dados. Retorna True se encontrado."""
     with sqlite3.connect(DATABASE) as conn:
@@ -235,15 +246,23 @@ def listar_tentativas(data_inicio=None, data_fim=None):
 # USUÁRIOS DO SISTEMA
 # =============================================
 def init_usuarios():
-    """Cria a tabela de usuários do sistema se não existir."""
+    """Cria a tabela de usuários do sistema (com perfil) se não existir e migra."""
     with sqlite3.connect(DATABASE) as conn:
         conn.execute('''
             CREATE TABLE IF NOT EXISTS usuarios (
                 username TEXT PRIMARY KEY,
                 senha_hash TEXT NOT NULL,
-                salt TEXT NOT NULL
+                salt TEXT NOT NULL,
+                perfil TEXT
             )
         ''')
+        # Migração: bancos antigos não têm a coluna 'perfil'.
+        try:
+            conn.execute('ALTER TABLE usuarios ADD COLUMN perfil TEXT')
+        except sqlite3.OperationalError:
+            pass  # Coluna já existe
+        # Usuários pré-existentes (sem perfil) viram admin para não perder acesso.
+        conn.execute("UPDATE usuarios SET perfil = 'admin' WHERE perfil IS NULL")
 
 
 def _hash_senha(senha, salt=None):
@@ -253,25 +272,27 @@ def _hash_senha(senha, salt=None):
     return h, salt
 
 
-def criar_usuario(username, senha):
+def criar_usuario(username, senha, perfil='operador'):
     h, salt = _hash_senha(senha)
     with sqlite3.connect(DATABASE) as conn:
         conn.execute(
-            'INSERT INTO usuarios (username, senha_hash, salt) VALUES (?, ?, ?)',
-            (username, h, salt)
+            'INSERT INTO usuarios (username, senha_hash, salt, perfil) VALUES (?, ?, ?, ?)',
+            (username, h, salt, perfil)
         )
 
 
 def verificar_usuario(username, senha):
-    """Retorna True se as credenciais forem válidas."""
+    """Retorna o perfil ('admin'/'operador') se as credenciais forem válidas, senão None."""
     with sqlite3.connect(DATABASE) as conn:
         row = conn.execute(
-            'SELECT senha_hash, salt FROM usuarios WHERE username = ?', (username,)
+            'SELECT senha_hash, salt, perfil FROM usuarios WHERE username = ?', (username,)
         ).fetchone()
     if row is None:
-        return False
+        return None
     h, _ = _hash_senha(senha, row[1])
-    return h == row[0]
+    if h != row[0]:
+        return None
+    return row[2] or 'admin'
 
 
 def listar_usuarios():
@@ -279,6 +300,14 @@ def listar_usuarios():
     with sqlite3.connect(DATABASE) as conn:
         return [r[0] for r in conn.execute(
             'SELECT username FROM usuarios ORDER BY username'
+        ).fetchall()]
+
+
+def listar_usuarios_perfis():
+    """Retorna [(username, perfil)] ordenada por username."""
+    with sqlite3.connect(DATABASE) as conn:
+        return [(r[0], r[1] or 'admin') for r in conn.execute(
+            'SELECT username, perfil FROM usuarios ORDER BY username'
         ).fetchall()]
 
 
